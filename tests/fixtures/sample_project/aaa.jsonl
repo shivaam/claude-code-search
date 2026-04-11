@@ -1,0 +1,10 @@
+{"type":"queue-operation","timestamp":"2026-04-09T10:00:00Z","sessionId":"aaa"}
+{"type":"user","uuid":"u1","sessionId":"aaa","timestamp":"2026-04-09T10:00:01Z","cwd":"/tmp/p","isSidechain":false,"message":{"role":"user","content":"How do I fix a broken Airflow scheduler?"}}
+{"type":"assistant","uuid":"a1","sessionId":"aaa","timestamp":"2026-04-09T10:00:05Z","cwd":"/tmp/p","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"You can check the scheduler logs first."},{"type":"tool_use","id":"t1","name":"Bash","input":{"cmd":"ls"}}]}}
+{"type":"user","uuid":"u2","sessionId":"aaa","timestamp":"2026-04-09T10:00:10Z","cwd":"/tmp/p","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"file1\nfile2"}]}}
+{"type":"user","uuid":"u3","sessionId":"aaa","timestamp":"2026-04-09T10:00:20Z","cwd":"/tmp/p","isSidechain":true,"message":{"role":"user","content":"sidechain noise"}}
+{"type":"ai-title","sessionId":"aaa","aiTitle":"Debug Airflow scheduler"}
+{"type":"custom-title","sessionId":"aaa","customTitle":"first manual title"}
+{"type":"custom-title","sessionId":"aaa","customTitle":"second manual title (latest)"}
+not a valid json line
+{"type":"assistant","uuid":"a2","sessionId":"aaa","timestamp":"2026-04-09T10:00:30Z","cwd":"/tmp/p2","isSidechain":false,"message":{"role":"assistant","content":"ok"}}

@@ -1,0 +1,11 @@
+data/
+config.toml
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+.DS_Store
+uv.lock
+
+docs/superpowers/

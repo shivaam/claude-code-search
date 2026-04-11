@@ -1,0 +1,3 @@
+{"type":"user","uuid":"x","sessionId":"bbb","timestamp":"2026-04-10T11:00:00Z","cwd":"/tmp/q","isSidechain":false,"message":{"role":"user","content":"I keep getting DAG parse failures in Airflow."}}
+{"type":"assistant","uuid":"y","sessionId":"bbb","timestamp":"2026-04-10T11:00:05Z","cwd":"/tmp/q","isSidechain":false,"message":{"role":"assistant","content":"Check for yaml indentation in the DAG file."}}
+{"type":"ai-title","sessionId":"bbb","aiTitle":"Fix DAG parse failures"}
