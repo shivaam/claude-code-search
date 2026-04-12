@@ -5,7 +5,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 import numpy as np
 
@@ -28,6 +28,23 @@ class IndexStats:
     sessions_written: int = 0
 
 
+@dataclass
+class ProgressEvent:
+    """Emitted by Indexer as it works, for the CLI to render progress."""
+
+    kind: str                     # "scanned" | "file_done" | "file_error"
+    index: int = 0                # 1-based current file index
+    total: int = 0                # total files to index this run
+    files_seen: int = 0           # total files under root (only on "scanned")
+    files_skipped: int = 0        # up-to-date files (only on "scanned")
+    path: Path | None = None
+    chunks_written: int = 0       # chunks written for this file (on "file_done")
+    error: str | None = None      # error message (on "file_error")
+
+
+ProgressFn = Callable[[ProgressEvent], None]
+
+
 class Indexer:
     def __init__(
         self,
@@ -39,23 +56,51 @@ class Indexer:
         self.cfg = cfg
         self.embedder = embedder
 
-    def run(self, root: Path) -> IndexStats:
+    def run(
+        self, root: Path, on_progress: ProgressFn | None = None
+    ) -> IndexStats:
         stats = IndexStats()
         all_files = walker.find_files(Path(root))
         needed = walker.files_needing_reindex(all_files, self.conn)
         stats.files_skipped = len(all_files) - len(needed)
 
+        if on_progress:
+            on_progress(
+                ProgressEvent(
+                    kind="scanned",
+                    total=len(needed),
+                    files_seen=len(all_files),
+                    files_skipped=stats.files_skipped,
+                )
+            )
+
         for i, path in enumerate(needed, 1):
             try:
-                self._index_one(path)
+                chunks_written = self._index_one(path)
                 stats.files_indexed += 1
-                if len(needed) > 50 and i % 25 == 0:
-                    print(
-                        f"  [{i}/{len(needed)}] indexed {path.name}",
-                        file=sys.stderr,
+                if on_progress:
+                    on_progress(
+                        ProgressEvent(
+                            kind="file_done",
+                            index=i,
+                            total=len(needed),
+                            path=path,
+                            chunks_written=chunks_written,
+                        )
                     )
             except Exception as e:  # pragma: no cover
-                print(f"[indexer] {path}: {e}", file=sys.stderr)
+                msg = f"{type(e).__name__}: {e}"
+                print(f"[indexer] {path}: {msg}", file=sys.stderr)
+                if on_progress:
+                    on_progress(
+                        ProgressEvent(
+                            kind="file_error",
+                            index=i,
+                            total=len(needed),
+                            path=path,
+                            error=msg,
+                        )
+                    )
 
         stats.chunks_written = self.conn.execute(
             "SELECT COUNT(*) FROM chunks"
@@ -65,7 +110,8 @@ class Indexer:
         ).fetchone()[0]
         return stats
 
-    def _index_one(self, path: Path) -> None:
+    def _index_one(self, path: Path) -> int:
+        """Index one file. Returns the number of chunks written."""
         conn = self.conn
         cfg = self.cfg
 
@@ -110,6 +156,7 @@ class Indexer:
 
         walker.mark_indexed(conn, path)
         conn.commit()
+        return len(chunks)
 
     def _upsert_session(self, meta: SessionMeta) -> None:
         conn = self.conn

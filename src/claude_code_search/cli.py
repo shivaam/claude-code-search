@@ -64,22 +64,116 @@ def _make_embedder(cfg: Config):
 
 
 def _cmd_index(cfg: Config, args: argparse.Namespace) -> int:
+    import time
+
     if args.rebuild:
         db_path = Path(cfg.paths.db)
         if db_path.exists():
+            print(f"rebuilding from scratch: deleting {db_path}", file=sys.stderr)
             db_path.unlink()
 
+    print(
+        f"scanning {cfg.paths.root}", file=sys.stderr, flush=True
+    )
     conn = connect(Path(cfg.paths.db))
     init_schema(conn)
-    embedder = _make_embedder(cfg)
-    stats = Indexer(conn, cfg, embedder=embedder).run(Path(cfg.paths.root))
 
     print(
+        f"loading embedding model {cfg.embedding.model} (device={cfg.embedding.device})...",
+        file=sys.stderr,
+        flush=True,
+    )
+    embedder = _make_embedder(cfg)
+
+    started = time.monotonic()
+    reporter = _ProgressReporter(sys.stderr)
+    stats = Indexer(conn, cfg, embedder=embedder).run(
+        Path(cfg.paths.root), on_progress=reporter
+    )
+    reporter.finish()
+
+    elapsed = time.monotonic() - started
+    print(
+        f"done in {_format_elapsed(elapsed)}: "
         f"indexed {stats.files_indexed} files "
         f"(skipped {stats.files_skipped}); "
-        f"{stats.chunks_written} chunks, {stats.sessions_written} sessions."
+        f"total {stats.chunks_written} chunks, {stats.sessions_written} sessions.",
+        file=sys.stderr,
     )
     return 0
+
+
+def _format_elapsed(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(int(seconds), 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m{s:02d}s"
+
+
+class _ProgressReporter:
+    """Renders indexer progress to a stream. Uses \\r overwrite on a TTY,
+    one-line-per-event on a pipe/file."""
+
+    def __init__(self, stream) -> None:
+        self.stream = stream
+        self.is_tty = bool(getattr(stream, "isatty", lambda: False)())
+        self.total_chunks = 0
+        self.last_line_len = 0
+
+    def __call__(self, ev) -> None:
+        if ev.kind == "scanned":
+            self.stream.write(
+                f"found {ev.files_seen} files; "
+                f"{ev.total} need (re)indexing, "
+                f"{ev.files_skipped} up-to-date\n"
+            )
+            self.stream.flush()
+            if ev.total == 0:
+                return
+            self.total_chunks = 0
+            return
+
+        if ev.kind == "file_done":
+            self.total_chunks += ev.chunks_written
+            name = ev.path.name if ev.path else "?"
+            if len(name) > 40:
+                name = name[:37] + "..."
+            msg = (
+                f"[{ev.index:>4}/{ev.total}] +{ev.chunks_written:>3} chunks "
+                f"(total {self.total_chunks}): {name}"
+            )
+            if self.is_tty:
+                # \r overwrite to keep one rolling line; pad to clear prior text.
+                pad = max(0, self.last_line_len - len(msg))
+                self.stream.write("\r" + msg + " " * pad)
+                self.last_line_len = len(msg)
+                # Newline every 50 files so scrollback has landmarks.
+                if ev.index % 50 == 0:
+                    self.stream.write("\n")
+                    self.last_line_len = 0
+            else:
+                self.stream.write(msg + "\n")
+            self.stream.flush()
+            return
+
+        if ev.kind == "file_error":
+            # Errors always get their own line.
+            if self.is_tty and self.last_line_len:
+                self.stream.write("\n")
+                self.last_line_len = 0
+            self.stream.write(
+                f"  [ERROR] {ev.path}: {ev.error}\n"
+            )
+            self.stream.flush()
+
+    def finish(self) -> None:
+        if self.is_tty and self.last_line_len:
+            self.stream.write("\n")
+            self.stream.flush()
+            self.last_line_len = 0
 
 
 _NOISE_TAG_RE = None  # lazy
