@@ -557,7 +557,45 @@ def _cmd_schedule(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-_SUBCOMMANDS = {"index", "search", "show", "resume", "summarize", "stats", "schedule"}
+def _cmd_config(cfg: Config, args: argparse.Namespace, cfg_path: Path) -> int:
+    if args.edit:
+        editor = os.environ.get("EDITOR", "vi")
+        if not cfg_path.exists():
+            write_default_config(cfg_path)
+        os.execvp(editor, [editor, str(cfg_path)])
+
+    if args.path:
+        print(cfg_path)
+        return 0
+
+    # Default: show config file path + key current values.
+    print(f"config: {cfg_path}" + (" (exists)" if cfg_path.exists() else " (will be created on first run)"))
+    print()
+    print(f"[paths]")
+    print(f"  root             = {cfg.paths.root}")
+    print(f"  db               = {cfg.paths.db}")
+    print(f"[embedding]")
+    print(f"  model            = {cfg.embedding.model}")
+    print(f"  device           = {cfg.embedding.device}")
+    print(f"[chunking]")
+    print(f"  max_chars        = {cfg.chunking.max_chars}")
+    print(f"  include_sidechains = {cfg.chunking.include_sidechains}")
+    print(f"[summarization]")
+    print(f"  model            = {cfg.summarization.model}")
+    print(f"  re_summarize_threshold = {cfg.summarization.re_summarize_threshold}")
+    print(f"[search]")
+    print(f"  top_n            = {cfg.search.top_n}")
+    print(f"  k_chunks         = {cfg.search.k_chunks}")
+    print(f"[schedule]")
+    print(f"  hour             = {cfg.schedule.hour:02d}:{cfg.schedule.minute:02d}")
+    print(f"  summarize        = {cfg.schedule.summarize}")
+    print()
+    print(f"edit:  ccsearch config --edit")
+    print(f"path:  ccsearch config --path")
+    return 0
+
+
+_SUBCOMMANDS = {"index", "search", "show", "resume", "summarize", "stats", "schedule", "config"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -610,6 +648,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--uninstall", action="store_true", help="remove scheduled index"
     )
 
+    p_config = sub.add_parser("config")
+    p_config.add_argument(
+        "--edit", action="store_true", help="open config.toml in $EDITOR"
+    )
+    p_config.add_argument(
+        "--path", action="store_true", help="print config file path and exit"
+    )
+
     return p
 
 
@@ -659,6 +705,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_stats(cfg, args)
     if args.cmd == "schedule":
         return _cmd_schedule(cfg, args)
+    if args.cmd == "config":
+        project = _project_root()
+        cfg_path = Path(args.config) if args.config else project / "config.toml"
+        return _cmd_config(cfg, args, cfg_path)
     parser.print_help()
     return 2
 
