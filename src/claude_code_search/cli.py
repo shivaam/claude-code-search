@@ -324,11 +324,11 @@ def _format_hit(cfg: Config, rank: int, hit) -> str:
     wrapped = _wrap_snippet(hit.snippet, width=body_w, indent="      ")
     lines.append(f'    {_c("33", "↳")} {_c("2", wrapped)}')
 
-    # Resume command, dimmed.
+    # Resume command — bare, copy-pasteable, no $() subshell wrapper.
     resume_cmd = (
-        f"(cd {shlex.quote(hit.cwd or '.')} && claude -r {hit.session_id})"
+        f"cd {shlex.quote(hit.cwd or '.')} && claude -r {hit.session_id}"
     )
-    lines.append(f"    {_c('2', '$')} {_c('2', resume_cmd)}")
+    lines.append(f"    {_c('2', resume_cmd)}")
 
     return "\n".join(lines)
 
@@ -357,6 +357,18 @@ def _format_hit_compact(cfg: Config, rank: int, hit) -> str:
 def _cmd_search(cfg: Config, args: argparse.Namespace) -> int:
     conn = connect(Path(cfg.paths.db))
     init_schema(conn)
+
+    # Guide first-time users who haven't indexed yet.
+    chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    if chunks == 0:
+        print(
+            "No conversations indexed yet. Run:\n\n"
+            "  ccsearch index\n\n"
+            "This takes ~5 minutes on first run (downloads a ~130 MB\n"
+            "embedding model, then indexes your Claude Code history).",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.grep:
         # Literal substring search — no embedding model needed, instant.

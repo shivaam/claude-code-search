@@ -23,7 +23,18 @@ class _HttpxTransport:
     def post(
         self, url: str, json_body: dict, timeout: float
     ) -> tuple[int, dict]:
-        r = self._httpx.post(url, json=json_body, timeout=timeout)
+        try:
+            r = self._httpx.post(url, json=json_body, timeout=timeout)
+        except self._httpx.ConnectError:
+            raise OllamaError(
+                f"cannot connect to ollama at {url}. "
+                f"Is ollama running? Start it with: ollama serve"
+            )
+        except self._httpx.TimeoutException:
+            raise OllamaError(
+                f"ollama timed out after {timeout}s on {url}. "
+                f"The model may still be loading — try again."
+            )
         try:
             data = r.json()
         except Exception:
