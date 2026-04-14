@@ -64,6 +64,137 @@ def _make_embedder(cfg: Config):
 # --- Subcommand handlers ---------------------------------------------------
 
 
+def _cmd_init(cfg: Config, args: argparse.Namespace) -> int:
+    """Guided first-run setup: index + schedule + summarize. Idempotent."""
+    import time
+
+    print()
+    print("  claude-code-search setup")
+    print()
+
+    # --- Step 1: Index -------------------------------------------------------
+    print("[1/3] Indexing your conversations...")
+    print(f"      scanning {cfg.paths.root}", flush=True)
+
+    conn = connect(Path(cfg.paths.db))
+    init_schema(conn)
+
+    print(
+        f"      loading embedding model ({cfg.embedding.model})...",
+        flush=True,
+    )
+    embedder = _make_embedder(cfg)
+
+    started = time.monotonic()
+    reporter = _ProgressReporter(sys.stdout)
+    stats = Indexer(conn, cfg, embedder=embedder).run(
+        Path(cfg.paths.root), on_progress=reporter
+    )
+    reporter.finish()
+    elapsed = time.monotonic() - started
+
+    if stats.files_indexed > 0:
+        print(
+            f"      done in {_format_elapsed(elapsed)}: "
+            f"{stats.files_indexed} files, "
+            f"{stats.chunks_written} chunks, "
+            f"{stats.sessions_written} sessions."
+        )
+    else:
+        print(
+            f"      already up to date "
+            f"({stats.chunks_written} chunks, "
+            f"{stats.sessions_written} sessions)."
+        )
+    print()
+
+    # --- Step 2: Schedule ----------------------------------------------------
+    from .scheduler import install as sched_install, status as sched_status_fn
+
+    sched_st = sched_status_fn(cfg)
+    if "not installed" in sched_st:
+        print("[2/3] Setting up daily auto-index...")
+        result = sched_install(cfg)
+        print(f"      {result.splitlines()[0]}")
+    else:
+        print("[2/3] Daily auto-index already set up.")
+    print()
+
+    # --- Step 3: Summarize ---------------------------------------------------
+    print("[3/3] Conversation outlines (optional, requires ollama)...")
+
+    # Check ollama availability.
+    from .ollama_client import OllamaClient, OllamaError
+
+    ollama_ok = False
+    model_name = cfg.summarization.model
+    try:
+        import httpx
+
+        r = httpx.get(
+            f"{cfg.summarization.ollama_url}/api/tags", timeout=3.0
+        )
+        if r.status_code == 200:
+            models = [m["name"] for m in r.json().get("models", [])]
+            if any(model_name in m for m in models):
+                ollama_ok = True
+                print(f"      ollama found, model {model_name} available.")
+            else:
+                print(
+                    f"      ollama running but {model_name} not pulled."
+                )
+                print(
+                    f"      tip: ollama pull {model_name}"
+                )
+        else:
+            print("      ollama not reachable.")
+    except Exception:
+        print("      ollama not running.")
+        print("      tip: install ollama (https://ollama.com) for outlines")
+
+    if ollama_ok:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE summary IS NULL OR summary_stale = 1"
+        ).fetchone()[0]
+        if pending > 0:
+            from .summarizer import daemon_status, start_daemon
+
+            ds = daemon_status(cfg, conn)
+            if ds["running"]:
+                print(
+                    f"      summarizer already running "
+                    f"({ds['done']}/{ds['total']} done)."
+                )
+            else:
+                print(
+                    f"      starting background summarizer "
+                    f"({pending} conversations to process)..."
+                )
+
+                def _factory():
+                    c = connect(Path(cfg.paths.db))
+                    init_schema(c)
+                    return c
+
+                try:
+                    start_daemon(cfg, _factory)
+                    print("      summarizer started.")
+                except RuntimeError as e:
+                    print(f"      {e}")
+        else:
+            print("      all conversations already summarized.")
+    print()
+
+    # --- Done ----------------------------------------------------------------
+    print("  Ready. Try:")
+    print()
+    print('    ccsearch "what was I working on last week"')
+    print('    ccsearch -g "#12345"')
+    print("    ccsearch --help")
+    print()
+    return 0
+
+
 def _cmd_index(cfg: Config, args: argparse.Namespace) -> int:
     import time
 
@@ -363,9 +494,8 @@ def _cmd_search(cfg: Config, args: argparse.Namespace) -> int:
     if chunks == 0:
         print(
             "No conversations indexed yet. Run:\n\n"
-            "  ccsearch index\n\n"
-            "This takes ~5 minutes on first run (downloads a ~130 MB\n"
-            "embedding model, then indexes your Claude Code history).",
+            "  ccsearch init\n\n"
+            "This sets everything up (~5 min on first run).",
             file=sys.stderr,
         )
         return 1
@@ -431,7 +561,7 @@ def _cmd_search(cfg: Config, args: argparse.Namespace) -> int:
             _c(
                 "2",
                 f"hint: {remaining} conversations not yet summarized — "
-                f"run 'ccsearch summarize --daemon' to populate",
+                f"run 'ccsearch init' or 'ccsearch summarize --daemon'",
             )
         )
     return 0
@@ -607,66 +737,67 @@ def _cmd_config(cfg: Config, args: argparse.Namespace, cfg_path: Path) -> int:
     return 0
 
 
-_SUBCOMMANDS = {"index", "search", "show", "resume", "summarize", "stats", "schedule", "config"}
+_SUBCOMMANDS = {"init", "index", "search", "show", "resume", "summarize", "stats", "schedule", "config"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="ccsearch")
+    p = argparse.ArgumentParser(
+        prog="ccsearch",
+        description="Semantic search over your Claude Code conversation history.",
+        epilog=(
+            "quickstart:\n"
+            "  ccsearch init              one-time setup (index + schedule + summarize)\n"
+            "  ccsearch \"your query\"      search by meaning\n"
+            "  ccsearch -g \"#12345\"       search by exact text (instant)\n"
+            "\n"
+            "config:  ccsearch config     show/edit settings\n"
+            "help:    ccsearch <cmd> -h   help for a specific command\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--config", default=None, help="path to config.toml")
     sub = p.add_subparsers(dest="cmd")
 
-    p_index = sub.add_parser("index")
-    p_index.add_argument("--root", default=None)
-    p_index.add_argument("--rebuild", action="store_true")
+    sub.add_parser("init", help="guided first-run setup (index + schedule + summarize)")
 
-    p_search = sub.add_parser("search")
-    p_search.add_argument("query")
-    p_search.add_argument("-n", type=int, default=None)
-    p_search.add_argument("--project", default=None)
-    p_search.add_argument("--json", action="store_true")
-    p_search.add_argument(
-        "-c", "--compact", action="store_true", help="one line per result"
-    )
-    p_search.add_argument(
-        "-g",
-        "--grep",
-        action="store_true",
-        help="literal case-insensitive search (fast, no embedding model needed)",
-    )
+    p_index = sub.add_parser("index", help="index conversations (incremental)")
+    p_index.add_argument("--root", default=None, help="override conversations root dir")
+    p_index.add_argument("--rebuild", action="store_true", help="delete index and rebuild from scratch")
 
-    p_show = sub.add_parser("show")
-    p_show.add_argument("session_id")
-    p_show.add_argument("--query", default=None)
-    p_show.add_argument("--context", type=int, default=None)
-    p_show.add_argument("--full", action="store_true")
+    p_search = sub.add_parser("search", help="semantic search (or use: ccsearch \"query\")")
+    p_search.add_argument("query", help="natural language query")
+    p_search.add_argument("-n", type=int, default=None, help="number of results (default: 10)")
+    p_search.add_argument("--project", default=None, help="filter by project name substring")
+    p_search.add_argument("--json", action="store_true", help="JSON output for scripting")
+    p_search.add_argument("-c", "--compact", action="store_true", help="one line per result")
+    p_search.add_argument("-g", "--grep", action="store_true",
+                          help="literal case-insensitive search (instant, no model needed)")
 
-    p_resume = sub.add_parser("resume")
-    p_resume.add_argument("session_id")
+    p_show = sub.add_parser("show", help="view messages around a match")
+    p_show.add_argument("session_id", help="conversation session ID")
+    p_show.add_argument("--query", default=None, help="center view on this text match")
+    p_show.add_argument("--context", type=int, default=None, help="messages before/after match")
+    p_show.add_argument("--full", action="store_true", help="show entire conversation")
 
-    p_summ = sub.add_parser("summarize")
-    p_summ.add_argument("--daemon", action="store_true")
-    p_summ.add_argument("--status", action="store_true")
-    p_summ.add_argument("--stop", action="store_true")
-    p_summ.add_argument("--session", default=None)
-    p_summ.add_argument("--all", action="store_true")
+    p_resume = sub.add_parser("resume", help="resume a conversation in Claude Code")
+    p_resume.add_argument("session_id", help="conversation session ID")
 
-    sub.add_parser("stats")
+    p_summ = sub.add_parser("summarize", help="generate conversation outlines via ollama")
+    p_summ.add_argument("--daemon", action="store_true", help="run in background (pausable)")
+    p_summ.add_argument("--status", action="store_true", help="show daemon progress")
+    p_summ.add_argument("--stop", action="store_true", help="stop the daemon cleanly")
+    p_summ.add_argument("--session", default=None, help="summarize one session (foreground)")
+    p_summ.add_argument("--all", action="store_true", help="summarize all pending (foreground)")
 
-    p_sched = sub.add_parser("schedule")
-    p_sched.add_argument(
-        "--install", action="store_true", help="install daily scheduled index"
-    )
-    p_sched.add_argument(
-        "--uninstall", action="store_true", help="remove scheduled index"
-    )
+    sub.add_parser("stats", help="index health: files, sessions, chunks, summaries")
 
-    p_config = sub.add_parser("config")
-    p_config.add_argument(
-        "--edit", action="store_true", help="open config.toml in $EDITOR"
-    )
-    p_config.add_argument(
-        "--path", action="store_true", help="print config file path and exit"
-    )
+    p_sched = sub.add_parser("schedule", help="manage daily auto-index (macOS/Linux)")
+    p_sched.add_argument("--install", action="store_true", help="install daily auto-index")
+    p_sched.add_argument("--uninstall", action="store_true", help="remove daily auto-index")
+
+    p_config = sub.add_parser("config", help="view/edit configuration")
+    p_config.add_argument("--edit", action="store_true", help="open config.toml in $EDITOR")
+    p_config.add_argument("--path", action="store_true", help="print config file path")
 
     return p
 
@@ -701,6 +832,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = _load_cfg(args.config)
+    if args.cmd == "init":
+        return _cmd_init(cfg, args)
     if args.cmd == "index":
         if args.root:
             cfg.paths.root = args.root

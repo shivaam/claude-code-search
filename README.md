@@ -13,104 +13,90 @@ $ ccsearch "scheduler bug"
     cd ~/workspace/airflow && claude -r 940abfde-...
 ```
 
-## Install
+## Install + setup
 
 ```bash
-pip install claude-code-search
+pip install claude-code-search    # or: pipx install / uv tool install
+ccsearch init                     # indexes, sets up daily auto-refresh, detects ollama
 ```
 
-Or isolated (recommended):
+That's it. `init` walks you through everything:
 
-```bash
-pipx install claude-code-search    # or
-uv tool install claude-code-search # fastest
 ```
+  claude-code-search setup
+
+[1/3] Indexing your conversations...
+      found 937 files; 937 need indexing
+      done in 5m12s: 937 files, 50999 chunks, 303 sessions.
+
+[2/3] Setting up daily auto-index...
+      installed: runs daily at 02:00
+
+[3/3] Conversation outlines (optional, requires ollama)...
+      ollama found, model gemma2:9b available.
+      starting background summarizer (303 conversations to process)...
+
+  Ready. Try: ccsearch "what was I working on last week"
+```
+
+No ollama? No problem — everything works without it. You just won't get bullet outlines in results.
 
 ## Usage
 
 ```bash
-ccsearch index                  # build the index (~5 min first run)
-ccsearch "your query"           # semantic search
-ccsearch -g "#64827"            # exact/literal search (instant, no model)
-ccsearch show <id> --query "x"  # see messages around a match
-ccsearch resume <id>            # cd + claude -r, ready to go
+ccsearch "your query"               # semantic search (~3s)
+ccsearch -g "#64827"                # exact text search (~0.2s, no model)
+ccsearch show <id> --query "text"   # view messages around a match
+ccsearch resume <id>                # cd + claude -r, back in the conversation
+ccsearch stats                      # index health
 ```
 
-That's it. The first `ccsearch index` downloads a ~130 MB embedding model and indexes `~/.claude/projects/`. After that, searches take ~3 seconds (semantic) or ~0.2 seconds (grep).
-
-## Optional: conversation outlines
-
-If you have [ollama](https://ollama.com) installed, you can generate timestamped outlines for each conversation:
-
-```bash
-ollama pull gemma2:9b
-ccsearch summarize --daemon     # runs in background, ~30s per conversation
-ccsearch summarize --stop       # pause anytime, resume with --daemon
-ccsearch summarize --status     # check progress
-```
-
-Outlines appear in search results once generated. Everything works fine without them.
-
-## Keep it up to date
-
-```bash
-ccsearch index                  # re-run manually (incremental, seconds)
-ccsearch schedule --install     # or auto-run daily (macOS LaunchAgent / Linux cron)
-ccsearch schedule --uninstall   # remove the schedule
-```
+`--compact` for one-line-per-result, `--json` for scripting, `-n 20` for more results.
 
 ## Configuration
 
 ```bash
-ccsearch config                 # see current settings
-ccsearch config --edit          # open config.toml in $EDITOR
+ccsearch config                     # see current settings
+ccsearch config --edit              # open in $EDITOR
 ```
 
-Everything is in one TOML file, auto-generated on first run. Key settings:
+Key settings in `config.toml` (auto-generated, all have sensible defaults):
 
-| Setting | Default | What it does |
+| Setting | Default | What |
 |---|---|---|
-| `[embedding] model` | `BAAI/bge-small-en-v1.5` | Embedding model (384-dim, ~130 MB) |
-| `[embedding] device` | `auto` | `auto` picks mps/cuda/cpu |
+| `[embedding] model` | `BAAI/bge-small-en-v1.5` | Embedding model (~130 MB) |
+| `[embedding] device` | `auto` | auto-detects mps/cuda/cpu |
 | `[summarization] model` | `gemma2:9b` | Ollama model for outlines |
-| `[summarization] re_summarize_threshold` | `10` | Re-summarize after N new messages |
 | `[search] top_n` | `10` | Results per query |
-| `[schedule] hour` | `2` | Daily auto-index hour (0-23) |
+| `[schedule] hour` | `2` | Daily auto-index hour |
 
-To swap the embedding model, edit config and `ccsearch index --rebuild`. To swap the summary model, edit config and `ccsearch summarize --daemon` (picks up new model on next run).
+Swap embedding model: edit config, run `ccsearch index --rebuild`.
+Swap summary model: edit config, `ollama pull <model>`, run `ccsearch summarize --daemon`.
 
-## All commands
+## Commands
 
-| Command | What |
-|---|---|
-| `ccsearch index [--rebuild]` | Index conversations (incremental by default) |
-| `ccsearch "query" [-n N]` | Semantic search |
-| `ccsearch -g "text" [-n N]` | Literal grep search (no model, instant) |
-| `ccsearch show ID [--query Q] [--context N] [--full]` | View conversation around a match |
-| `ccsearch resume ID` | Resume a conversation in Claude Code |
-| `ccsearch summarize --daemon/--stop/--status/--all` | Background outline generation via ollama |
-| `ccsearch schedule --install/--uninstall` | Daily auto-index (macOS/Linux) |
-| `ccsearch config [--edit] [--path]` | View/edit configuration |
-| `ccsearch stats` | Index health: files, sessions, chunks, summaries |
-
-Add `--compact` or `--json` to any search for one-line or machine-readable output.
+```
+ccsearch init                        setup everything (run once)
+ccsearch "query"                     semantic search
+ccsearch -g "text"                   literal grep search (instant)
+ccsearch show ID [--query Q]         view conversation context
+ccsearch resume ID                   resume in Claude Code
+ccsearch summarize --daemon/--stop   background outlines via ollama
+ccsearch schedule --install/--uninstall  daily auto-index
+ccsearch config [--edit]             view/edit settings
+ccsearch stats                       index health
+ccsearch --help                      full help
+```
 
 ## How it works
 
-1. **Parses** `.jsonl` files from `~/.claude/projects/` — keeps user/assistant text + tool output, drops tool calls, images, thinking blocks
-2. **Chunks** long messages into ~1500-char windows with overlap
-3. **Embeds** with sentence-transformers (bge-small-en-v1.5, runs on MPS/CUDA/CPU)
-4. **Stores** chunks + 384-dim vectors in a single SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec)
-5. **Searches** via KNN, groups hits by session, enriches with titles and outlines
-6. **Grep mode** (`-g`) bypasses all of the above — just `LIKE '%query%'` on the chunks table
+Parses `.jsonl` from `~/.claude/projects/` → chunks messages → embeds with sentence-transformers → stores in SQLite + [sqlite-vec](https://github.com/asg017/sqlite-vec) → KNN search grouped by session. Grep mode (`-g`) skips all of that and does `LIKE '%query%'` directly on the chunks table.
 
 ## Tradeoffs
 
-**Good at:** finding conversations by topic, resuming past work, exact identifier lookup (`-g`), staying local and private.
+**Good at:** finding conversations by topic, exact ID lookup (`-g`), resuming past work, staying fully local.
 
-**Less good at:** non-English text (bge-small is English-biased), very large corpora (sqlite-vec caps KNN at k=4096 — fine for ~50K chunks, may need partitioning past ~250K), first-invocation speed (~3s to load torch).
-
-**Requires:** Python 3.11+, ~300 MB disk (model + index). Ollama only needed for outlines (optional). Tested on macOS (Apple Silicon + Intel) and should work on Linux. Windows untested (daemon uses `os.fork`).
+**Limitations:** ~3s startup (torch import), English-biased embeddings, sqlite-vec caps KNN at k=4096 (fine for ~50K chunks), ollama needed for outlines only. macOS + Linux tested; Windows untested (`os.fork` in daemon).
 
 ## License
 
