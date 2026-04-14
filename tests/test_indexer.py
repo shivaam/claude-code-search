@@ -80,7 +80,9 @@ def test_indexer_marks_summary_stale_on_growth(tmp_path: Path) -> None:
     root = _fresh_root(tmp_path)
     conn = connect(tmp_path / "db.sqlite")
     init_schema(conn)
-    idx = Indexer(conn, Config(), embedder=FakeEmbedder())
+    cfg = Config()
+    cfg.summarization.re_summarize_threshold = 1  # low threshold for test
+    idx = Indexer(conn, cfg, embedder=FakeEmbedder())
     idx.run(root)
 
     conn.execute(

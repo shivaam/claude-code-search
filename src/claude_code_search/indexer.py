@@ -169,10 +169,12 @@ class Indexer:
         if existing is not None:
             prev_count = existing["message_count"]
             had_summary = existing["summary"] is not None
+            growth = meta.message_count - prev_count
+            threshold = self.cfg.summarization.re_summarize_threshold
             if (
                 self.cfg.summarization.re_summarize_on_growth
                 and had_summary
-                and meta.message_count > prev_count
+                and growth >= threshold
             ):
                 stale = 1
 

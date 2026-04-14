@@ -11,6 +11,7 @@ from .config import Config, load_config, write_default_config
 from .indexer import Indexer
 from .searcher import Searcher
 from .store import connect, init_schema
+from .scheduler import install as sched_install, uninstall as sched_uninstall, status as sched_status
 from .summarizer import (
     Summarizer,
     daemon_status,
@@ -356,10 +357,18 @@ def _format_hit_compact(cfg: Config, rank: int, hit) -> str:
 def _cmd_search(cfg: Config, args: argparse.Namespace) -> int:
     conn = connect(Path(cfg.paths.db))
     init_schema(conn)
-    embedder = _make_embedder(cfg)
-    hits = Searcher(conn, cfg, embedder=embedder).search(
-        args.query, project_filter=args.project, top_n=args.n
-    )
+
+    if args.grep:
+        # Literal substring search — no embedding model needed, instant.
+        searcher = Searcher(conn, cfg, embedder=None)
+        hits = searcher.grep_search(
+            args.query, project_filter=args.project, top_n=args.n
+        )
+    else:
+        embedder = _make_embedder(cfg)
+        hits = Searcher(conn, cfg, embedder=embedder).search(
+            args.query, project_filter=args.project, top_n=args.n
+        )
 
     if args.json:
         import json
@@ -536,7 +545,19 @@ def _cmd_stats(cfg: Config, args: argparse.Namespace) -> int:
 # --- Argparse setup --------------------------------------------------------
 
 
-_SUBCOMMANDS = {"index", "search", "show", "resume", "summarize", "stats"}
+def _cmd_schedule(cfg: Config, args: argparse.Namespace) -> int:
+    if args.install:
+        print(sched_install(cfg))
+        return 0
+    if args.uninstall:
+        print(sched_uninstall(cfg))
+        return 0
+    # Default: show status.
+    print(sched_status(cfg))
+    return 0
+
+
+_SUBCOMMANDS = {"index", "search", "show", "resume", "summarize", "stats", "schedule"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -556,6 +577,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_search.add_argument(
         "-c", "--compact", action="store_true", help="one line per result"
     )
+    p_search.add_argument(
+        "-g",
+        "--grep",
+        action="store_true",
+        help="literal case-insensitive search (fast, no embedding model needed)",
+    )
 
     p_show = sub.add_parser("show")
     p_show.add_argument("session_id")
@@ -574,6 +601,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_summ.add_argument("--all", action="store_true")
 
     sub.add_parser("stats")
+
+    p_sched = sub.add_parser("schedule")
+    p_sched.add_argument(
+        "--install", action="store_true", help="install daily scheduled index"
+    )
+    p_sched.add_argument(
+        "--uninstall", action="store_true", help="remove scheduled index"
+    )
+
     return p
 
 
@@ -621,6 +657,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_summarize(cfg, args)
     if args.cmd == "stats":
         return _cmd_stats(cfg, args)
+    if args.cmd == "schedule":
+        return _cmd_schedule(cfg, args)
     parser.print_help()
     return 2
 

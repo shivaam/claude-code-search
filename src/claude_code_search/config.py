@@ -38,6 +38,7 @@ class SummarizationConfig:
     max_bullets: int = 8
     time_gap_min_for_bullet: int = 60
     re_summarize_on_growth: bool = True
+    re_summarize_threshold: int = 10  # only re-summarize when >= this many new msgs
 
 
 @dataclass
@@ -62,6 +63,13 @@ class OutputConfig:
 
 
 @dataclass
+class ScheduleConfig:
+    hour: int = 2           # run daily at this hour (0-23)
+    minute: int = 0
+    summarize: bool = True  # also run summarize --all after indexing
+
+
+@dataclass
 class Config:
     paths: PathsConfig = field(default_factory=PathsConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
@@ -70,6 +78,7 @@ class Config:
     search: SearchConfig = field(default_factory=SearchConfig)
     show: ShowConfig = field(default_factory=ShowConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
 
 
 def _merge_section(target: Any, values: dict[str, Any]) -> None:
@@ -133,6 +142,7 @@ ollama_url              = "http://localhost:11434"
 max_bullets             = 8
 time_gap_min_for_bullet = 60
 re_summarize_on_growth  = true
+re_summarize_threshold  = 10       # only re-summarize after this many new messages
 
 [search]
 top_n         = 10
@@ -144,4 +154,9 @@ default_context = 4
 
 [output]
 strip_project_prefix = ""
+
+[schedule]
+hour      = 2              # run daily at this hour (0-23, local time)
+minute    = 0
+summarize = true           # also run summarize --all after indexing
 """
